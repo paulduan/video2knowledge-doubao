@@ -2,8 +2,8 @@
 """convert_bilibili_cache.py — 将 B 站客户端缓存的 m4s 音视频合并封装为 mp4。
 
 B 站桌面/移动端缓存的目录形如:
-  <cache_dir>/<cid>/<cid>-1-<type>.m4s   # 视频流 (H.264/HEVC)
-  <cache_dir>/<cid>/<cid>-1-<type>.m4s   # 音频流 (AAC)
+  <cache_dir>/<cid>/<cid>-1-<videoType>.m4s   # 视频流 (H.264/HEVC)
+  <cache_dir>/<cid>/<cid>-1-<audioType>.m4s   # 音频流 (AAC)
   <cache_dir>/<cid>/videoInfo.json       # 元数据 (标题/时长/清晰度等)
 
 缓存的 .m4s 文件头部带有 9 字节占位前缀 ("000000000" + NUL)，ffmpeg 无法

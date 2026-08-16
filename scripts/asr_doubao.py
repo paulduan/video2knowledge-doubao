@@ -10,7 +10,7 @@ Pipeline:
     视频 → ffmpeg 提取 16kHz WAV → 上传 TOS → 提交 ASR 任务 → 轮询结果 → 字幕
 
 Usage:
-    python3 asr_doubao.py --video in.mp4 --out-dir out --language zh
+    python3 asr_doubao.py --video in.mp4 --out-dir out --language zh-CN
 
 输出:
     subtitles.srt / subtitles.vtt / subtitles.json

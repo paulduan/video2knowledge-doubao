@@ -27,7 +27,6 @@ from config import (
     ARK_URL,
     ARK_TEXT_EP_ID,
     ARK_EP_ID,
-    validate_config,
 )
 
 DEFAULT_TEMPLATE = Path(__file__).resolve().parent.parent / "assets" / "default-template.md"
@@ -163,8 +162,7 @@ def _merge_list_items(items: list[str], max_n: int) -> str:
     return "\n".join(out)
 
 
-def build_analysis(raw_text: str, source: str, lang: str = "zh",
-                   char_limit: int = 8000) -> dict:
+def build_analysis(raw_text: str, char_limit: int = 8000) -> dict:
     """分字段向豆包大模型请求摘要/时间线/要点/问答/术语。
 
     策略: 每个字段单独一次 prompt，小而精准。长文本使用 map-reduce。
@@ -291,7 +289,6 @@ def main() -> int:
                     default="all", help="输出格式: knowledge=md, csv=闪卡, "
                                         "all=两者 (默认 all)")
     ap.add_argument("--title", default=None)
-    ap.add_argument("--lang", choices=["zh", "en"], default="zh")
     ap.add_argument("--char-limit", type=int, default=None)
     args = ap.parse_args()
 
@@ -321,7 +318,7 @@ def main() -> int:
     print(f"[v2k] {len(segs)} 段, {duration:.0f}s; 正在生成知识文档...",
           file=sys.stderr)
 
-    analysis = build_analysis(raw_text, source, lang=args.lang, char_limit=char_limit)
+    analysis = build_analysis(raw_text, char_limit=char_limit)
 
     ctx = {
         "title": title,

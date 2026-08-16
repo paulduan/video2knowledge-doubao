@@ -166,7 +166,7 @@ def main() -> int:
                     help="dHash 汉明距离阈值，仅保留与上一帧距离大于该值的帧"
                          " (默认 10)")
     ap.add_argument("--dedup-region", choices=list(REGION_FILTERS), default="board",
-                    help="dHash 计算区域: board=板书区域(默认, 画面15%~60%高度), "
+                    help="dHash 计算区域: board=板书区域(默认, 画面15%%~60%%高度), "
                          "full=全帧, top=上半部, center=中部")
     ap.add_argument("--max-frames", type=int, default=120,
                     help="最大保留帧数 (默认 120)")

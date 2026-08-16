@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """tos_upload.py — 火山引擎 TOS 对象存储上传工具。
 
-ASR 服务要求音频通过 TOS 预签名 URL 提交。
+ASR 音频 / OCR 图片通过 TOS 预签名 URL 提交给豆包/火山服务。
 """
 from __future__ import annotations
 
