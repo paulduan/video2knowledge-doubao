@@ -8,7 +8,7 @@ Pipeline:
     视频 → extract_frames.py 帧提取 → TOS 上传 → 逐帧调用 Ark 视觉模型 → 时间戳文字标注
 
 Usage:
-    python3 ocr_doubao.py --video slides.mp4 --out-dir out --mode dedup
+    python3 ocr_doubao.py --video slides.mp4 --out-dir out --mode density
     python3 ocr_doubao.py --video slides.mp4 --out-dir out --prompt-ocr
 
 输出:
@@ -130,7 +130,14 @@ def call_vision_model(image: str, prompt: str, max_output_tokens: int = 8192) ->
 
 def frames_from(video: Path, out_dir: Path, interval: float, mode: str,
                 dedup_fps: float, dedup_hamming: int, max_frames: int,
-                dedup_region: str = "board") -> Path:
+                dedup_region: str = "board", *,
+                density_sampling_fps: float = 1.0, density_floor: float = 0.3,
+                density_min_increment: float = 0.35,
+                density_fingerprint_hamming: int = 16,
+                density_min_interval: float = 12.0,
+                density_erase_drop: float = 2.0,
+                density_erase_recover: float = 0.7,
+                density_bright_threshold: int = 200) -> Path:
     """委托 extract_frames.py 进行帧提取。"""
     here = Path(__file__).resolve().parent
     cmd = [sys.executable, str(here / "extract_frames.py"),
@@ -138,10 +145,20 @@ def frames_from(video: Path, out_dir: Path, interval: float, mode: str,
            "--mode", mode]
     if mode == "interval":
         cmd += ["--interval", str(interval)]
-    else:
+    elif mode == "dedup":
         cmd += ["--dedup-fps", str(dedup_fps),
                 "--dedup-hamming", str(dedup_hamming),
                 "--dedup-region", str(dedup_region),
+                "--max-frames", str(max_frames)]
+    else:
+        cmd += ["--density-sampling-fps", str(density_sampling_fps),
+                "--density-floor", str(density_floor),
+                "--density-min-increment", str(density_min_increment),
+                "--density-fingerprint-hamming", str(density_fingerprint_hamming),
+                "--density-min-interval", str(density_min_interval),
+                "--density-erase-drop", str(density_erase_drop),
+                "--density-erase-recover", str(density_erase_recover),
+                "--density-bright-threshold", str(density_bright_threshold),
                 "--max-frames", str(max_frames)]
     subprocess.run(cmd, check=True)
     return out_dir / "frames" / "frames.json"
@@ -171,13 +188,25 @@ def main() -> int:
                     help="直接使用已有帧 manifest (如预处理后的 frames.json)，"
                          "跳过内部取帧")
     ap.add_argument("--out-dir", required=True, type=Path)
-    ap.add_argument("--mode", choices=["interval", "dedup"], default="dedup",
-                    help="帧采样模式 (默认 dedup)")
+    ap.add_argument("--mode", choices=["interval", "dedup", "density"],
+                    default="density",
+                    help="帧采样模式: density=文字密度增量采样(默认, 推荐), "
+                         "dedup=dHash去重, interval=均匀间隔")
     ap.add_argument("--interval", type=float, default=2.0)
     ap.add_argument("--dedup-fps", type=float, default=1.0)
     ap.add_argument("--dedup-hamming", type=int, default=10)
     ap.add_argument("--dedup-region", choices=["full", "top", "center", "board"],
                     default="board", help="dHash 计算区域 (默认 board)")
+    ap.add_argument("--density-sampling-fps", type=float, default=1.0)
+    ap.add_argument("--density-floor", type=float, default=0.3,
+                    help="density 模式空板密度下限(%%), 低于该值视为空板不保留"
+                         " (默认 0.3)")
+    ap.add_argument("--density-min-increment", type=float, default=0.35)
+    ap.add_argument("--density-fingerprint-hamming", type=int, default=10)
+    ap.add_argument("--density-min-interval", type=float, default=12.0)
+    ap.add_argument("--density-erase-drop", type=float, default=2.0)
+    ap.add_argument("--density-erase-recover", type=float, default=0.7)
+    ap.add_argument("--density-bright-threshold", type=int, default=200)
     ap.add_argument("--max-frames", type=int, default=120)
     ap.add_argument("--prompt-ocr", action="store_true",
                     help="使用 OCR 转写模式（逐字转写所有文字/表格），"
@@ -212,7 +241,15 @@ def main() -> int:
             return 2
         manifest = frames_from(args.video, args.out_dir, args.interval, args.mode,
                                args.dedup_fps, args.dedup_hamming, args.max_frames,
-                               args.dedup_region)
+                               args.dedup_region,
+                               density_sampling_fps=args.density_sampling_fps,
+                               density_floor=args.density_floor,
+                               density_min_increment=args.density_min_increment,
+                               density_fingerprint_hamming=args.density_fingerprint_hamming,
+                               density_min_interval=args.density_min_interval,
+                               density_erase_drop=args.density_erase_drop,
+                               density_erase_recover=args.density_erase_recover,
+                               density_bright_threshold=args.density_bright_threshold)
     frames = json.loads(manifest.read_text())["frames"]
 
     prompt = PROMPT_OCR if args.prompt_ocr else PROMPT_CAPTION

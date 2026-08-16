@@ -30,6 +30,9 @@ if [ -z "$DURATION" ]; then
 fi
 
 # HH:MM:SS.mm → 秒
+# 注意: 00/09 等前导零数字在 python3 源码字面量中会报 SyntaxError，
+# 这里用 $((10#$x)) 强制十进制后再传给 python3。
 IFS=':' read -r H M S <<<"$DURATION"
 H=${H:-0}; M=${M:-0}; S=${S:-0}
+H=$((10#$H)); M=$((10#$M)); S=$((10#$S))
 python3 -c "print(int($H)*3600 + int($M)*60 + float($S))"

@@ -144,6 +144,29 @@ def report(name: str, hashes: list[np.ndarray], boundaries: list[float],
         boundary_hits(hashes, boundaries, fps)
 
 
+def density_report(video: Path, fps: float, bright_threshold: int = 200) -> None:
+    """采样板区文字密度，输出统计，用于标定 density 模式的 floor/increment。"""
+    from extract_frames import BOARD_CROP_GRAY, _analyze_all_frames
+    samples = _analyze_all_frames(video, fps, BOARD_CROP_GRAY, bright_threshold)
+    n = len(samples)
+    if n == 0:
+        print("\n[density] 无采样帧")
+        return
+    dens = np.array([d for _, d, _ in samples])
+    print(f"\n=== board 文字密度 (threshold>{bright_threshold}, "
+          f"{n} 帧 @ {fps}fps) ===")
+    pcts = np.percentile(dens, [1, 5, 25, 50, 75, 95, 99])
+    print("密度分位数(%): " + ", ".join(
+        f"{q}%={v:.3f}" for q, v in zip([1, 5, 25, 50, 75, 95, 99], pcts)))
+    print(f"min={dens.min():.3f}  max={dens.max():.3f}  mean={dens.mean():.3f}")
+    print(f"空板区间估计(最低1~5%分位): {pcts[0]:.3f}% ~ {pcts[1]:.3f}%")
+    hist, edges = np.histogram(
+        dens, bins=[0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 1, 2, 3, 4, 6, 8, 10, 20, 100])
+    for c, lo, hi in zip(hist, edges[:-1], edges[1:]):
+        if c:
+            print(f"  [{lo:5.2f},{hi:5.2f})%: {c:5d} 帧  {'#' * min(c // 10, 60)}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="dHash 帧间距离分布分析（纯本地）")
     ap.add_argument("--video", required=True, type=Path)
@@ -151,6 +174,10 @@ def main() -> int:
                     help="采样率 fps (默认 1.0)")
     ap.add_argument("--region", choices=["all", "full", "top", "center", "board"],
                     default="all", help="分析区域 (默认 all)")
+    ap.add_argument("--density", action="store_true",
+                    help="额外统计板区文字密度分布（标定 density 模式阈值用）")
+    ap.add_argument("--density-bright-threshold", type=int, default=200,
+                    help="密度统计的亮像素阈值(0-255) (默认 200)")
     ap.add_argument("--captions", type=Path, default=None,
                     help="captions.json（板书 start 列表），用于统计边界命中率")
     args = ap.parse_args()
@@ -172,6 +199,8 @@ def main() -> int:
     for r in regions:
         hashes = sample_hashes(args.video, args.fps, r)
         report(r, hashes, boundaries, args.fps)
+    if args.density:
+        density_report(args.video, args.fps, args.density_bright_threshold)
     return 0
 
 
