@@ -1,0 +1,40 @@
+---
+description: 付费 API 调用必须事前确认。ASR、OCR、知识问答等豆包/火山引擎 API 调用会产生费用，执行前必须向用户确认。
+alwaysApply: true
+---
+
+# 付费 API 调用确认规则
+
+## 规则
+
+**本项目的 ASR、OCR、知识问答生成等功能调用豆包/火山引擎 API，均会产生费用。执行任何会触发 API 调用的操作前，必须先用 AskQuestion 工具向用户确认。**
+
+## 哪些操作会产生费用（必须先确认）
+
+| 操作 | 涉及脚本 | 计费说明 |
+|------|---------|---------|
+| ASR 语音转写 | `scripts/asr_doubao.py` | 按音频时长计费 |
+| OCR 板书/画面识别 | `scripts/ocr_doubao.py` | 按图片张数/Token 计费 |
+| 知识问答/总结生成 | `scripts/build_knowledge.py` | 按 Token 计费 |
+| 图片预处理（本地） | `scripts/preprocess_frames.py` | 无费用（纯本地 OpenCV） |
+| 缓存转 MP4/取帧（本地） | `scripts/convert_bilibili_cache.py`、`extract_frames.py` | 无费用 |
+
+## 执行流程
+
+1. 在执行上述会调用 API 的脚本前，**必须**使用 `AskQuestion` 向用户确认，说明将调用哪些付费接口、处理多少数据（如帧数、音频时长）。
+2. 确认内容至少包括：具体操作、预估数据量（帧数/时长/张数）。
+3. 用户确认后才可执行；用户未确认前不得调用任何付费 API。
+4. 流水线入口 `run_pipeline.py` 一次会同时触发 ASR + OCR + 知识生成（path 3 融合模式），执行前必须整体确认。
+
+## 示例
+
+❌ 错误：直接运行 `python3 run_pipeline.py --cid 25685856471` 而不先确认（会触发 ASR+OCR+豆包总结全部付费调用）
+
+✅ 正确：
+1. 先用 AskQuestion 询问：是否确认运行完整流水线（将产生 ASR+OCR+豆包总结费用）？
+2. 用户确认后，再执行命令。
+
+## 注意
+
+- 纯本地操作（缓存转 MP4、提取帧、OpenCV 预处理、ffmpeg 处理）**不产生费用**，可无需确认直接执行。
+- 若用户已明确给出执行指令（如"跑一下""测试下"），视为已确认，但仍应简要告知会产生费用。

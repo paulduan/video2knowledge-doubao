@@ -74,20 +74,6 @@ def build_parser() -> argparse.ArgumentParser:
                     help="预处理时不裁剪板面，只做增强")
     ap.add_argument("--force", action="store_true",
                     help="忽略已有产物，全部重跑")
-    ap.add_argument("--frame-mode", choices=["interval", "dedup", "density"],
-                    default="density",
-                    help="帧采样模式: density=文字密度增量采样(默认, 推荐), "
-                         "dedup=密集采样+dHash去重, interval=均匀间隔采样")
-    ap.add_argument("--interval", type=float, default=2.0,
-                    help="interval 模式帧间隔秒数 (默认 2.0)")
-    ap.add_argument("--dedup-fps", type=float, default=1.0,
-                    help="dedup 模式密集采样率 fps (默认 1.0)")
-    ap.add_argument("--dedup-hamming", type=int, default=10,
-                    help="dedup 模式 dHash 汉明距离阈值 (默认 10)")
-    ap.add_argument("--dedup-region", choices=["full", "top", "center", "board"],
-                    default="board",
-                    help="dedup 模式 dHash 计算区域: board=板书区域(默认), "
-                         "full=全帧, top=上半部, center=中部")
     ap.add_argument("--density-sampling-fps", type=float, default=1.0,
                     help="density 模式密集采样率 fps (默认 1.0)")
     ap.add_argument("--density-floor", type=float, default=0.3,
@@ -113,34 +99,25 @@ def build_parser() -> argparse.ArgumentParser:
                     help="density 模式静止有板期兜底: 相邻保留帧间隔超过该秒数时, "
                          "补入后续首个有内容(密度>=floor)的采样帧 (默认 300, 0=关闭)")
     ap.add_argument("--max-frames", type=int, default=120,
-                    help="dedup/density 模式最大保留帧数 (默认 120)")
+                    help="density 模式最大保留帧数 (默认 120)")
     return ap
 
 
 def _frame_args(video: Path, out_dir: Path,
                 args: argparse.Namespace) -> list[str]:
-    """构造 extract_frames.py 参数（与 run_pipeline 保持一致）。"""
-    a = ["--video", str(video), "--out-dir", str(out_dir),
-         "--mode", args.frame_mode]
-    if args.frame_mode == "interval":
-        a += ["--interval", str(args.interval)]
-    elif args.frame_mode == "dedup":
-        a += ["--dedup-fps", str(args.dedup_fps),
-              "--dedup-hamming", str(args.dedup_hamming),
-              "--dedup-region", args.dedup_region,
-              "--max-frames", str(args.max_frames)]
-    else:
-        a += ["--density-sampling-fps", str(args.density_sampling_fps),
-              "--density-floor", str(args.density_floor),
-              "--density-min-increment", str(args.density_min_increment),
-              "--density-fingerprint-hamming", str(args.density_fingerprint_hamming),
-              "--density-min-interval", str(args.density_min_interval),
-              "--density-erase-drop", str(args.density_erase_drop),
-              "--density-erase-recover", str(args.density_erase_recover),
-              "--density-bright-threshold", str(args.density_bright_threshold),
-              "--density-min-frames", str(args.density_min_frames),
-              "--density-max-gap", str(args.density_max_gap),
-              "--max-frames", str(args.max_frames)]
+    """构造 extract_frames.py 的 density 参数（与 run_pipeline 保持一致）。"""
+    a = ["--video", str(video), "--out-dir", str(out_dir)]
+    a += ["--density-sampling-fps", str(args.density_sampling_fps),
+          "--density-floor", str(args.density_floor),
+          "--density-min-increment", str(args.density_min_increment),
+          "--density-fingerprint-hamming", str(args.density_fingerprint_hamming),
+          "--density-min-interval", str(args.density_min_interval),
+          "--density-erase-drop", str(args.density_erase_drop),
+          "--density-erase-recover", str(args.density_erase_recover),
+          "--density-bright-threshold", str(args.density_bright_threshold),
+          "--density-min-frames", str(args.density_min_frames),
+          "--density-max-gap", str(args.density_max_gap),
+          "--max-frames", str(args.max_frames)]
     return a
 
 
@@ -219,7 +196,7 @@ def main() -> int:
             out_dir = base_dir / safe_dirname(Path(mp4).stem)
             out_dir.mkdir(parents=True, exist_ok=True)
 
-            # 2. 帧提取（关键帧，默认 dedup 去重）
+            # 2. 帧提取（density 文字密度增量采样）
             frames_manifest = out_dir / "frames" / "frames.json"
             if args.force or not frames_manifest.is_file():
                 rc = run_script("extract_frames.py",

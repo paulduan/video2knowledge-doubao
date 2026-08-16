@@ -29,7 +29,7 @@ Usage:
 
     # 默认 OCR 会逐字转写黑板板书；加 --caption 改为画面描述
     # 加 --full-transcript 在融合后调用豆包大模型生成完整转写（语音+板书融合）
-    # 帧采样默认 density（文字密度增量采样）；可用 --frame-mode dedup/interval 切换
+    # 帧采样使用 density（文字密度增量采样）
 """
 from __future__ import annotations
 
@@ -112,15 +112,8 @@ def safe_dirname(name: str) -> str:
     return cleaned
 
 
-def frame_mode_args(args: argparse.Namespace) -> list[str]:
-    """按 --frame-mode 构造 extract_frames/ocr_doubao 的模式相关参数。"""
-    if args.frame_mode == "interval":
-        return ["--interval", str(args.interval)]
-    if args.frame_mode == "dedup":
-        return ["--dedup-fps", str(args.dedup_fps),
-                "--dedup-hamming", str(args.dedup_hamming),
-                "--dedup-region", args.dedup_region,
-                "--max-frames", str(args.max_frames)]
+def density_args(args: argparse.Namespace) -> list[str]:
+    """构造 extract_frames 的 density 模式参数（唯一取帧方式）。"""
     return ["--density-sampling-fps", str(args.density_sampling_fps),
             "--density-floor", str(args.density_floor),
             "--density-min-increment", str(args.density_min_increment),
@@ -147,20 +140,6 @@ def main() -> int:
                     help="处理路径: 1=纯画面OCR, 2=语音转写, 3=融合模式 (默认 3)")
     ap.add_argument("--language", default="zh-CN",
                     help="ASR 语言代码 (默认 zh-CN)")
-    ap.add_argument("--frame-mode", choices=["interval", "dedup", "density"],
-                    default="density",
-                    help="帧采样模式: density=文字密度增量采样(默认, 推荐), "
-                         "dedup=密集采样+dHash去重, interval=均匀间隔采样")
-    ap.add_argument("--interval", type=float, default=2.0,
-                    help="interval 模式帧间隔秒数 (默认 2.0)")
-    ap.add_argument("--dedup-fps", type=float, default=1.0,
-                    help="dedup 模式密集采样率 fps (默认 1.0)")
-    ap.add_argument("--dedup-hamming", type=int, default=10,
-                    help="dedup 模式 dHash 汉明距离阈值 (默认 10)")
-    ap.add_argument("--dedup-region", choices=["full", "top", "center", "board"],
-                    default="board",
-                    help="dedup 模式 dHash 计算区域: board=板书区域(默认), "
-                         "full=全帧, top=上半部, center=中部")
     ap.add_argument("--density-sampling-fps", type=float, default=1.0,
                     help="density 模式密集采样率 fps (默认 1.0)")
     ap.add_argument("--density-floor", type=float, default=0.3,
@@ -186,7 +165,7 @@ def main() -> int:
                     help="density 模式静止有板期兜底: 相邻保留帧间隔超过该秒数时, "
                          "补入后续首个有内容(密度>=floor)的采样帧 (默认 300, 0=关闭)")
     ap.add_argument("--max-frames", type=int, default=120,
-                    help="dedup/density 模式最大保留帧数 (默认 120)")
+                    help="density 模式最大保留帧数 (默认 120)")
     ap.add_argument("--preprocess", action="store_true",
                     help="OCR 前预处理帧：提取黑板/白板区域 + 清晰化")
     ap.add_argument("--no-crop", action="store_true",
@@ -230,8 +209,7 @@ def main() -> int:
         frame_args = [
             "--video", video,
             "--out-dir", str(out_dir / "frames"),
-            "--mode", args.frame_mode,
-        ] + frame_mode_args(args)
+        ] + density_args(args)
         rc = run_script("extract_frames.py", frame_args)
         if rc != 0:
             return rc
@@ -260,8 +238,7 @@ def main() -> int:
     if args.path in ("1", "3"):
         ocr_args = [
             "--out-dir", str(out_dir),
-            "--mode", args.frame_mode,
-        ] + frame_mode_args(args)
+        ]
         if not args.caption:
             ocr_args += ["--prompt-ocr"]  # 默认逐字转写黑板板书
         if frames_manifest is not None:

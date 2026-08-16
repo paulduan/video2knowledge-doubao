@@ -1,37 +1,28 @@
 #!/usr/bin/env python3
-"""extract_frames.py — 从视频中采样代表性帧。
+"""extract_frames.py — 从视频中采样代表性帧（density 文字密度增量采样）。
 
-三种模式:
-  - interval (可选): 均匀 fps 采样
-  - dedup (可选): 密集采样 + 感知哈希(dHash)去重，适合板书/录屏类视频
-  - density (默认): 文字密度增量采样，以板区文字密度为主信号、内容指纹为辅
-
-density 模式设计依据（对真实教学视频的实测，见 analyze_frame_dedup.py 与
+density 模式设计依据（对真实教学视频的实测，见 analyze_frame_density.py 与
 density 数据标定）:
   - 板区文字密度 = 板书/粉笔亮像素占板区比例。实测范围:
     空板 ≈ 0.06%~0.13%，有板书 0.3%~4%。密度随书写单调递增，
     是"板书是否在变化"的可靠信号。
-  - 单纯 dHash 去重在三个场景下失真:
-      1. 跳跃大: 教师长时间只讲不写 → 板面不变 → 不取帧，内容突然出现时
-         出现数百秒空档（实测最大 438s），渐进书写过程被整体跳过。
-      2. 开头空板多帧: 空板时教师走动/路人经过也会触发 dHash 变化，
-         开头 70s 被捕获 9 个几乎无内容的帧。
-      3. 过密: 连续书写时每笔都触发 dHash 阈值，帧间隔仅 1~3s。
-  - density 模式对策:
+  - 单纯指纹去重在真实教学场景下会失真（教师只讲不写 → 数百秒大空档;
+    开头空板期被人物走动触发; 连续书写时每笔都触发），故 density 采用
+    "密度为主、指纹为辅":
       1. 密度相对上一保留帧净增 min_increment 个百分点 → 保留（捕捉书写增量）
       2. 密度相近但指纹汉明距离 >= fingerprint_hamming → 保留
          （改写/换公式等不显著改变密度的内容变化）
-      3. 密度低于 floor 视为空板，一律不保留（修掉问题 2）
-      4. 保留帧最小间隔 min_interval 秒（修掉问题 3）
+      3. 密度低于 floor 视为空板，一律不保留（修掉"开头空板多帧"）
+      4. 保留帧最小间隔 min_interval 秒（修掉连续书写的过密）
       5. 擦板重写: 检测"密度骤降(擦板) → 回升"，回升至擦前密度
-         erase_recover_frac 即强制保留一帧（修掉问题 4）
+         erase_recover_frac 即强制保留一帧
       6. 低对比度兜底: 提取帧数 < min_frames 且视频较长时自动降低亮像素阈值
          重跑（粉笔亮度偏低的视频默认阈值会把密度信号压平，几乎取不到帧）
       7. 静止有板期兜底: 相邻保留帧间隔 > max_gap 秒时补入后续首个有内容的
          采样帧（教师长时间只讲不写、板面静止会产生数百秒大空档）
-  - 指纹沿用 64-bit dHash；density 模式单条 ffmpeg 管道流式输出板区
-    原始分辨率灰度图，同时计算密度与指纹（Python 内降采样到 9x8），
-    避免全分辨率整批载入内存，也不额外增加 ffmpeg 解码遍数。
+  - 指纹为 64-bit dHash；单条 ffmpeg 管道流式输出板区原始分辨率灰度图，
+    同时计算密度与指纹（Python 内降采样到 9x8），避免全分辨率整批载入内存，
+    也不额外增加 ffmpeg 解码遍数。
 
 输出: <out_dir>/frame_%06d.jpg + frames.json
 """
@@ -50,18 +41,9 @@ import numpy as np
 # 导入 config 以把项目 bin/ 目录加入 PATH（ffmpeg/ffprobe）
 from config import BIN_DIR  # noqa: F401  (副作用: 注册 bin 到 PATH)
 
-# dHash 计算区域 -> ffmpeg 滤镜链（先裁剪再缩放到 9x8 灰度）。
-# 教学视频中板书通常位于画面中上部，画面底部多为教师身体/讲台等
-# 高动态干扰；默认只统计 "board" 区域以降低人物走动导致的误判。
-REGION_FILTERS = {
-    "full":   "scale=9:8",
-    "top":    "crop=iw:ih*0.5:0:0,scale=9:8",
-    "center": "crop=iw:ih*0.6:0:ih*0.2,scale=9:8",
-    "board":  "crop=iw:ih*0.45:0:ih*0.15,scale=9:8",
-}
-
-# density 模式板区灰度滤镜：与 REGION_FILTERS["board"] 的 crop 完全一致，
-# 但保留原始分辨率 —— 密度统计需要真实亮度分布，缩放到 9x8 会毁掉它。
+# density 板区灰度滤镜：只取画面 15%~60% 高度的板区并转灰度，保留原始分辨率
+# —— 密度统计需要真实亮度分布，缩放到 9x8 会毁掉它。教学视频中板书通常位于
+# 画面中上部，画面底部多为教师身体/讲台等高动态干扰，故只统计板区。
 BOARD_CROP_GRAY = "crop=iw:ih*0.45:0:ih*0.15,format=gray"
 
 
@@ -84,57 +66,6 @@ def _hamming(a: np.ndarray, b: np.ndarray) -> int:
     return int(np.count_nonzero(a != b))
 
 
-def extract_interval(video: Path, out_dir: Path, interval: float,
-                     fps_filter: float | None) -> list[dict]:
-    """均匀 fps 采样。时间戳 = 等间距分布在视频时长上。"""
-    filt = f"fps={fps_filter}" if fps_filter else f"fps={1.0 / interval}"
-    pattern = str(out_dir / "frame_%06d.jpg")
-    subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(video),
-         "-vf", filt, "-q:v", "3", "-y", pattern],
-        check=True,
-    )
-    frames = sorted(out_dir.glob("frame_*.jpg"))
-    duration = ffprobe_duration(video)
-    n = len(frames)
-    records = []
-    for i, f in enumerate(frames):
-        t = round(i * (duration / n), 3) if n else 0.0
-        records.append({"file": str(f), "t": t})
-    return records
-
-
-def _hash_all_frames(video: Path, fps: float, region: str) -> list[tuple[int, np.ndarray]]:
-    """对视频以 fps 采样，返回 [(帧索引, dhash)] 列表。
-
-    通过 ffmpeg 管道输出 PGM 流，逐帧解析计算哈希。
-    region 指定参与哈希的画面区域（见 REGION_FILTERS）。
-    """
-    vf = f"fps={fps},{REGION_FILTERS[region]},format=gray"
-    proc = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(video),
-         "-vf", vf, "-f", "image2pipe",
-         "-vcodec", "pgm", "-"],
-        capture_output=True, check=True,
-    )
-    blob = proc.stdout
-    out = []
-    idx = 0
-    chunks = blob.split(b"P5\n")
-    for body in chunks[1:]:
-        try:
-            nl1 = body.index(b"\n")
-            nl2 = body.index(b"\n", nl1 + 1)
-            w, h = (int(x) for x in body[:nl1].split())
-            px = np.frombuffer(body[nl2 + 1:nl2 + 1 + w * h],
-                               dtype=np.uint8).reshape(h, w)
-            out.append((idx, _dhash_bits(px)))
-            idx += 1
-        except Exception:
-            break
-    return out
-
-
 def _analyze_all_frames(video: Path, fps: float, crop_filter: str,
                         bright_threshold: int) -> list[tuple[int, float, np.ndarray]]:
     """对视频以 fps 采样，返回 [(帧索引, 板区密度%, dHash)] 列表。
@@ -143,7 +74,7 @@ def _analyze_all_frames(video: Path, fps: float, crop_filter: str,
     流式逐帧解析（不整体载入内存，避免全分辨率数据占满内存）。
     每帧计算:
       - density: 板区像素中亮度 > bright_threshold 的占比(%)，反映板书量
-      - dHash:   Python 内降采样到 9x8 后计算，与 dedup 模式同一定义
+      - dHash:   Python 内降采样到 9x8 后计算
     """
     vf = f"fps={fps},{crop_filter}"
     proc = subprocess.Popen(
@@ -184,45 +115,6 @@ def _analyze_all_frames(video: Path, fps: float, crop_filter: str,
     if proc.returncode != 0:
         raise subprocess.CalledProcessError(proc.returncode, proc.args)
     return out
-
-
-def extract_dedup(video: Path, out_dir: Path, fps: float, hamming: int,
-                  max_frames: int, region: str) -> list[dict]:
-    """密集采样 + dHash 去重 + 帧数上限裁剪。
-
-    保留与上一保留帧汉明距离 > hamming 的帧，最后均匀降采样到 max_frames。
-    """
-    all_hashes = _hash_all_frames(video, fps, region)
-    if not all_hashes:
-        return []
-
-    def t_of(i: int) -> float:
-        return round(i / fps, 3)
-
-    kept_idx = [all_hashes[0][0]]
-    last = all_hashes[0][1]
-    for i, h in all_hashes[1:]:
-        if _hamming(h, last) > hamming:
-            kept_idx.append(i)
-            last = h
-
-    if len(kept_idx) > max_frames:
-        step = len(kept_idx) / max_frames
-        kept_idx = [kept_idx[int(j * step)] for j in range(max_frames)]
-
-    records = []
-    for n, fi in enumerate(kept_idx, 1):
-        jpg = out_dir / f"frame_{n:06d}.jpg"
-        t = t_of(fi)
-        subprocess.run(
-            ["ffmpeg", "-hide_banner", "-loglevel", "error",
-             "-ss", str(t), "-i", str(video), "-frames:v", "1",
-             "-q:v", "3", "-y", str(jpg)],
-            check=True,
-        )
-        if jpg.exists():
-            records.append({"file": str(jpg), "t": t})
-    return records
 
 
 def _select_density_frames(samples: list[tuple[int, float, np.ndarray]], *,
@@ -290,7 +182,7 @@ def _select_density_frames(samples: list[tuple[int, float, np.ndarray]], *,
             last_kept_hash = h
 
     # max-gap 兜底: 静止有板期（教师长时间只讲不写、板面满而静止）会产生数百秒
-    # 大空档; 相邻保留帧间隔超过 max_gap 秒时，补入 interval 之后首个 density>=floor
+    # 大空档; 相邻保留帧间隔超过 max_gap 秒时，补入目标时刻之后首个 density>=floor
     # 的采样帧（空板期 density<floor 仍跳过，保持"跳过死时间"行为）。补入后以新的
     # 最后保留帧为基准继续检查，可在一个大空档内连续补入多帧。
     if max_gap > 0 and len(kept) >= 2:
@@ -409,55 +301,39 @@ def extract_density(video: Path, out_dir: Path, *, fps: float, floor: float,
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="视频帧采样工具")
+    ap = argparse.ArgumentParser(
+        description="视频帧采样工具（density 文字密度增量采样）")
     ap.add_argument("--video", required=True, type=Path)
     ap.add_argument("--out-dir", required=True, type=Path)
-    ap.add_argument("--mode", choices=["interval", "dedup", "density"],
-                    default="density",
-                    help="帧采样模式: density=文字密度增量采样(默认, 推荐), "
-                         "dedup=dHash去重, interval=均匀间隔")
-    ap.add_argument("--interval", type=float, default=2.0,
-                    help="interval 模式的帧间隔秒数 (默认 2.0)")
-    ap.add_argument("--fps", type=float, default=None,
-                    help="显式 fps 滤镜值 (覆盖 --interval)")
-    ap.add_argument("--dedup-fps", type=float, default=1.0,
-                    help="dedup 模式密集采样率 (默认 1.0 fps)")
-    ap.add_argument("--dedup-hamming", type=int, default=10,
-                    help="dHash 汉明距离阈值，仅保留与上一帧距离大于该值的帧"
-                         " (默认 10)")
-    ap.add_argument("--dedup-region", choices=list(REGION_FILTERS), default="board",
-                    help="dHash 计算区域: board=板书区域(默认, 画面15%%~60%%高度), "
-                         "full=全帧, top=上半部, center=中部")
     ap.add_argument("--density-sampling-fps", type=float, default=1.0,
-                    help="density 模式密集采样率 (默认 1.0 fps)")
+                    help="密集采样率 (默认 1.0 fps)")
     ap.add_argument("--density-floor", type=float, default=0.3,
-                    help="density 模式空板密度下限(%%): 板区密度低于该值视为"
-                         "空板, 一律不保留 (默认 0.3)")
+                    help="空板密度下限(%%): 板区密度低于该值视为空板, "
+                         "一律不保留 (默认 0.3)")
     ap.add_argument("--density-min-increment", type=float, default=0.35,
-                    help="density 模式保留触发: 密度相对上一保留帧净增该值个"
-                         "百分点即保留 (默认 0.35)")
+                    help="保留触发: 密度相对上一保留帧净增该值个百分点即保留 "
+                         "(默认 0.35)")
     ap.add_argument("--density-fingerprint-hamming", type=int, default=10,
-                    help="density 模式指纹触发: 密度相近但指纹汉明距离 >= 该值"
-                         "即保留 (默认 10)")
+                    help="指纹触发: 密度相近但指纹汉明距离 >= 该值即保留 (默认 10)")
     ap.add_argument("--density-min-interval", type=float, default=12.0,
-                    help="density 模式保留帧最小间隔秒数 (默认 12.0)")
+                    help="保留帧最小间隔秒数 (默认 12.0)")
     ap.add_argument("--density-erase-drop", type=float, default=2.0,
-                    help="density 模式擦板检测: 密度相对上一保留帧骤降该值个"
-                         "百分点视为擦板 (默认 2.0)")
+                    help="擦板检测: 密度相对上一保留帧骤降该值个百分点视为擦板 "
+                         "(默认 2.0)")
     ap.add_argument("--density-erase-recover", type=float, default=0.7,
-                    help="density 模式擦板恢复系数: 擦板后密度回升至擦前密度的"
-                         "该比例即强制保留一帧 (默认 0.7)")
+                    help="擦板恢复系数: 擦板后密度回升至擦前密度的该比例即强制"
+                         "保留一帧 (默认 0.7)")
     ap.add_argument("--density-bright-threshold", type=int, default=200,
-                    help="density 模式亮像素阈值(0-255): 板区灰度高于该值计为"
-                         "板书/粉笔像素 (默认 200)")
+                    help="亮像素阈值(0-255): 板区灰度高于该值计为板书/粉笔像素 "
+                         "(默认 200)")
     ap.add_argument("--density-min-frames", type=int, default=15,
-                    help="density 模式低对比度兜底: 一次提取帧数低于该值且视频"
-                         "时长>600s 时, 自动降低亮像素阈值重跑 (默认 15)")
+                    help="低对比度兜底: 一次提取帧数低于该值且视频时长>600s 时, "
+                         "自动降低亮像素阈值重跑 (默认 15)")
     ap.add_argument("--density-max-gap", type=float, default=300.0,
-                    help="density 模式静止有板期兜底: 相邻保留帧间隔超过该秒数时, "
-                         "补入后续首个有内容(密度>=floor)的采样帧 (默认 300, 0=关闭)")
+                    help="静止有板期兜底: 相邻保留帧间隔超过该秒数时, 补入后续"
+                         "首个有内容(密度>=floor)的采样帧 (默认 300, 0=关闭)")
     ap.add_argument("--max-frames", type=int, default=120,
-                    help="dedup/density 模式最大保留帧数 (默认 120)")
+                    help="最大保留帧数 (默认 120)")
     args = ap.parse_args()
 
     if not args.video.is_file():
@@ -468,48 +344,32 @@ def main() -> int:
         shutil.rmtree(args.out_dir)
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.mode == "dedup":
-        recs = extract_dedup(args.video, args.out_dir, args.dedup_fps,
-                             args.dedup_hamming, args.max_frames, args.dedup_region)
-        bright_used = args.density_bright_threshold
-        print(f"[ok] 提取 {len(recs)} 个去重帧 "
-              f"(fps={args.dedup_fps}, hamming>{args.dedup_hamming}, "
-              f"region={args.dedup_region}, cap={args.max_frames}) -> {args.out_dir}",
-              file=sys.stderr)
-    elif args.mode == "density":
-        recs, bright_used = extract_density(
-            args.video, args.out_dir,
-            fps=args.density_sampling_fps, floor=args.density_floor,
-            min_increment=args.density_min_increment,
-            fingerprint_hamming=args.density_fingerprint_hamming,
-            min_interval=args.density_min_interval,
-            erase_drop=args.density_erase_drop,
-            erase_recover_frac=args.density_erase_recover,
-            bright_threshold=args.density_bright_threshold,
-            max_frames=args.max_frames,
-            min_frames=args.density_min_frames,
-            max_gap=args.density_max_gap,
-        )
-        print(f"[ok] 提取 {len(recs)} 个密度增量帧 "
-              f"(fps={args.density_sampling_fps}, floor={args.density_floor}%%, "
-              f"inc>={args.density_min_increment}%%, "
-              f"hamming>={args.density_fingerprint_hamming}, "
-              f"min_interval={args.density_min_interval}s, "
-              f"erase_drop={args.density_erase_drop}%%, "
-              f"bright={bright_used}, max_gap={args.density_max_gap}s, "
-              f"cap={args.max_frames}) -> {args.out_dir}", file=sys.stderr)
-    else:
-        recs = extract_interval(args.video, args.out_dir, args.interval, args.fps)
-        bright_used = args.density_bright_threshold
-        print(f"[ok] 提取 {len(recs)} 帧 -> {args.out_dir}", file=sys.stderr)
+    recs, bright_used = extract_density(
+        args.video, args.out_dir,
+        fps=args.density_sampling_fps, floor=args.density_floor,
+        min_increment=args.density_min_increment,
+        fingerprint_hamming=args.density_fingerprint_hamming,
+        min_interval=args.density_min_interval,
+        erase_drop=args.density_erase_drop,
+        erase_recover_frac=args.density_erase_recover,
+        bright_threshold=args.density_bright_threshold,
+        max_frames=args.max_frames,
+        min_frames=args.density_min_frames,
+        max_gap=args.density_max_gap,
+    )
+    print(f"[ok] 提取 {len(recs)} 个密度增量帧 "
+          f"(fps={args.density_sampling_fps}, floor={args.density_floor}%%, "
+          f"inc>={args.density_min_increment}%%, "
+          f"hamming>={args.density_fingerprint_hamming}, "
+          f"min_interval={args.density_min_interval}s, "
+          f"erase_drop={args.density_erase_drop}%%, "
+          f"bright={bright_used}, max_gap={args.density_max_gap}s, "
+          f"cap={args.max_frames}) -> {args.out_dir}", file=sys.stderr)
 
     manifest = args.out_dir / "frames.json"
     manifest.write_text(json.dumps(
         {"video": str(args.video.resolve()),
-         "mode": args.mode,
-         "interval": args.interval, "fps": args.fps,
-         "dedup_fps": args.dedup_fps, "dedup_hamming": args.dedup_hamming,
-         "dedup_region": args.dedup_region,
+         "mode": "density",
          "density_sampling_fps": args.density_sampling_fps,
          "density_floor": args.density_floor,
          "density_min_increment": args.density_min_increment,

@@ -121,7 +121,7 @@ python3 scripts/convert_bilibili_cache.py --all --out-dir output
 ### 各 --path 的含义
 
 - **path 1**：只做画面 OCR（板书/录屏文字），不做语音；
-- **path 2**：只做语音转写（ASR），`--frame-mode` / `--interval` / `--preprocess` 等取帧与预处理参数不生效；
+- **path 2**：只做语音转写（ASR），`--preprocess` 等画面相关参数不生效；
 - **path 3**（默认）：ASR 与 OCR **并行**执行，`merge_visual.py` 按时间戳融合，知识文档同时使用语音与画面信息；
 - `--full-transcript` 仅对 path 2/3 生效（path 3 时基于 `merged.json`，path 2 时基于 `subtitles.json`）。
 
@@ -129,7 +129,7 @@ python3 scripts/convert_bilibili_cache.py --all --out-dir output
 
 ```bash
 python3 scripts/asr_doubao.py --video lecture.mp4 --out-dir output --language zh-CN
-python3 scripts/ocr_doubao.py --video lecture.mp4 --out-dir output --mode dedup --prompt-ocr
+python3 scripts/ocr_doubao.py --video lecture.mp4 --out-dir output --prompt-ocr
 python3 scripts/merge_visual.py --subtitles output/subtitles.json --visual output/captions.json
 python3 scripts/build_knowledge.py --subtitles output/subtitles.json --merged output/merged.json --out-dir output
 ```
@@ -144,12 +144,17 @@ python3 scripts/build_knowledge.py --subtitles output/subtitles.json --merged ou
 | `--out-dir <path>` | `output/` | 输出基础目录；实际产物在 `<out-dir>/<视频名>/` |
 | `--path 1\|2\|3` | `3` | 处理路径：1=纯画面OCR，2=语音转写，3=融合模式 |
 | `--language <code>` | `zh-CN` | ASR 语言代码（`zh-CN`/`en-US`/`ja-JP` 等） |
-| `--frame-mode interval\|dedup` | `dedup` | 帧采样模式：dedup=密集采样+dHash 去重（推荐），interval=均匀间隔采样 |
-| `--interval <sec>` | `2.0` | interval 模式帧间隔秒数 |
-| `--dedup-fps <fps>` | `1.0` | dedup 模式密集采样率（fps） |
-| `--dedup-hamming <n>` | `10` | dedup 模式 dHash 汉明距离阈值（与上一保留帧距离 > 该值才保留） |
-| `--dedup-region full\|top\|center\|board` | `board` | dHash 计算区域：board=板书区域（默认，画面 15%~60% 高度），full=全帧，top=上半部，center=中部 |
-| `--max-frames <n>` | `120` | dedup 模式最大保留帧数上限（每帧对应一次 OCR 计费，是费用上限） |
+| `--density-sampling-fps <fps>` | `1.0` | density 模式密集采样率（fps） |
+| `--density-floor <%>` | `0.3` | 空板密度下限：板区密度低于该值视为空板，一律不保留 |
+| `--density-min-increment <%>` | `0.35` | 保留触发：密度相对上一保留帧净增该值个百分点即保留 |
+| `--density-fingerprint-hamming <n>` | `10` | 指纹触发：密度相近但指纹汉明距离 >= 该值即保留 |
+| `--density-min-interval <sec>` | `12.0` | 保留帧最小间隔秒数 |
+| `--density-erase-drop <%>` | `2.0` | 擦板检测：密度相对上一保留帧骤降该值个百分点视为擦板 |
+| `--density-erase-recover <frac>` | `0.7` | 擦板恢复系数：回升至擦前密度该比例即强制保留一帧 |
+| `--density-bright-threshold <n>` | `200` | 亮像素阈值（0-255）：板区灰度高于该值计为板书/粉笔像素 |
+| `--density-min-frames <n>` | `15` | 低对比度兜底：一次提取帧数低于该值且视频较长时自动降阈值重跑 |
+| `--density-max-gap <sec>` | `300.0` | 静止有板期兜底：相邻保留帧间隔超过该秒数时补入采样帧（0=关闭） |
+| `--max-frames <n>` | `120` | density 模式最大保留帧数上限（每帧对应一次 OCR 计费，是费用上限） |
 | `--preprocess` | 关 | OCR 前预处理帧：检测黑板/白板区域 + 裁剪 + CLAHE 增强 |
 | `--no-crop` | 关 | 配合 `--preprocess`，只增强不裁剪 |
 | `--caption` | 关 | OCR 使用画面描述模式；默认（不指定）为黑板板书逐字转写 |
@@ -163,7 +168,7 @@ python3 scripts/build_knowledge.py --subtitles output/subtitles.json --merged ou
 |---|---|---|
 | `run_pipeline.py` | 一键流水线入口：取帧 → 并行 ASR+OCR → 融合 → 知识文档 | 是（视 path） |
 | `convert_bilibili_cache.py` | B 站客户端缓存 m4s → mp4（无损 `-c copy`） | 否 |
-| `extract_frames.py` | 帧提取：interval 均匀采样 / dedup 密集采样+dHash 去重 | 否 |
+| `extract_frames.py` | 帧提取：density 文字密度增量采样（板区密度为主 + 内容指纹为辅） | 否 |
 | `preprocess_frames.py` | 黑板/白板区域检测、裁剪、CLAHE 增强 + 降噪 + 锐化 | 否 |
 | `asr_doubao.py` | 火山 SeedASR 录音文件识别：提取 16kHz WAV → TOS → submit/query 轮询 → `subtitles.*` | 是（ASR） |
 | `ocr_doubao.py` | 豆包视觉模型逐帧 OCR / 画面描述 → `captions.*` | 是（OCR） |
@@ -172,7 +177,7 @@ python3 scripts/build_knowledge.py --subtitles output/subtitles.json --merged ou
 | `build_full_transcript.py` | 纯本地拼接完整课程文档（语音为主时间线 + 板书内联）→ `full_transcript.md` | 否 |
 | `build_knowledge.py` | 豆包生成知识文档（摘要/时间线/要点/问答/术语）→ `knowledge.md` + `cards.csv` | 是（Token） |
 | `tos_upload.py` | 上传文件到 TOS 生成预签名 URL（ASR/OCR 用） | 否（仅存储/流量成本） |
-| `analyze_frame_dedup.py` | 分析视频帧间 dHash 距离分布，辅助调 dedup 阈值 | 否 |
+| `analyze_frame_density.py` | 分析板区文字密度分布，辅助标定 density 取帧阈值（floor/increment） | 否 |
 | `config.py` | 从 `.env` 加载环境变量 + 配置校验 + 把项目 `bin/` 加入 PATH | 否 |
 
 ## 环境变量配置说明
@@ -231,7 +236,7 @@ ln -sf "$(python3 -c 'import imageio_ffmpeg,os;print(imageio_ffmpeg.get_ffmpeg_e
 ### OCR 结果为空或太慢
 
 - 默认逐字转写黑板板书；若视频不是板书类（如纯录屏），加 `--caption` 改用画面描述；
-- 每帧一次模型调用，慢属正常：用 `--max-frames` 控制费用上限，或调大 `--dedup-hamming` / 调小 `--dedup-fps` 减少帧数。
+- 每帧一次模型调用，慢属正常：用 `--max-frames` 控制费用上限，或调大 `--density-min-increment` / `--density-min-interval` 减少帧数。
 
 ## 输出产物
 
