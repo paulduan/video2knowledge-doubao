@@ -1,0 +1,26 @@
+# 运行输出
+runs/
+output/
+
+# 环境配置
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# 视频文件
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.webm
+
+# 临时文件
+*.wav

@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# ffprobe 包装脚本：用 ffmpeg 模拟 ffprobe 的时长查询能力
+# 项目脚本通过 `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 <file>`
+# 查询视频时长，这里用 ffmpeg 解析实现等价输出。
+set -e
+
+FFMPEG_BIN="$(dirname "$0")/ffmpeg"
+INPUT=""
+
+# 解析参数，提取输入文件（最后一个非选项参数）
+for arg in "$@"; do
+    case "$arg" in
+        -*) ;;
+        *) INPUT="$arg" ;;
+    esac
+done
+
+if [ -z "$INPUT" ]; then
+    echo "usage: ffprobe <input>" >&2
+    exit 1
+fi
+
+# ffmpeg -i 输出含 "Duration: 00:01:23.45, ..."
+OUTPUT="$("$FFMPEG_BIN" -hide_banner -i "$INPUT" 2>&1 || true)"
+DURATION="$(echo "$OUTPUT" | grep -oE 'Duration: [0-9:.]+' | head -1 | awk '{print $2}')"
+
+if [ -z "$DURATION" ]; then
+    echo "无法解析时长: $INPUT" >&2
+    exit 1
+fi
+
+# HH:MM:SS.mm → 秒
+IFS=':' read -r H M S <<<"$DURATION"
+H=${H:-0}; M=${M:-0}; S=${S:-0}
+python3 -c "print(int($H)*3600 + int($M)*60 + float($S))"
