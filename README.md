@@ -10,10 +10,11 @@
 ## 流水线总览
 
 ```
+── run_pipeline.py（单条视频）─────────────────────────────────────────
 输入 ──┬─ 本地视频 (--video)
       └─ B 站客户端缓存 (--cid) → convert_bilibili_cache.py 无损合并为 mp4
            │
-           ├─ (path 1/3) extract_frames.py 帧提取
+           ├─ (path 1/3) extract_frames.py density 取帧（文字密度增量采样，唯一模式）
            │    └─ (可选 --preprocess) preprocess_frames.py 黑板检测/裁剪/增强
            │
            ├─ (path 2/3) ASR：ffmpeg 提取 16kHz WAV → 上传 TOS 取预签名 URL
@@ -28,6 +29,11 @@
                  │                         → full_transcript.{json,srt,md}
                  │
                  └─ build_knowledge.py 豆包生成知识文档 → knowledge.md + cards.csv
+
+── batch_process.py（批量，仅 B 站缓存）───────────────────────────────
+缓存根目录 → 逐个转 mp4（converted/）→ density 取帧 → 黑板预处理
+            → (可选 --with-asr) ASR → batch_summary.txt
+            （默认只做本地免费步骤；已存在产物自动跳过，可中断续跑）
 ```
 
 三条处理路径（`--path`）：
@@ -38,7 +44,9 @@
 | 2 | 语音转写：只听音频 | ASR（火山 SeedASR） | `subtitles.*` + `knowledge.*` |
 | 3 | **融合模式（默认）**：语音 + 画面并行处理后再融合 | ASR + OCR + 知识生成 | `subtitles.*` + `captions.*` + `merged.json` + `knowledge.*` |
 
-> **费用提示**：ASR、OCR、完整转写与知识生成均调用豆包/火山引擎付费接口（按音频时长、图片张数、Token 计费）。`--path 3` 一次会同时触发 ASR + OCR + 知识生成三类调用；帧提取、预处理、缓存转 mp4 等本地操作免费。
+> **费用提示**：ASR、OCR、完整转写与知识生成均调用豆包/火山引擎付费接口（按音频时长、图片张数、Token 计费）。`--path 3` 一次会同时触发 ASR + OCR + 知识生成三类调用；帧提取（density 取帧）、预处理、缓存转 mp4 等本地操作免费。
+>
+> **付费 API 需先确认**：按项目约定（`.cursor/rules/pay-api-confirmation.mdc`），执行任何会触发付费 API 的命令前，必须先确认将调用的付费接口与预估数据量（帧数 / 音频时长）。批量入口 `batch_process.py` 默认只跑本地免费步骤，加 `--with-asr` 前应确认批量总时长与预估费用。
 
 ## 快速开始
 
@@ -118,6 +126,38 @@ python3 scripts/convert_bilibili_cache.py --cid 25685856471 --out-dir output
 python3 scripts/convert_bilibili_cache.py --all --out-dir output
 ```
 
+### 批量处理 B 站缓存（batch_process.py）
+
+一次性处理全部（或部分）B 站缓存：逐个转 mp4 → density 取帧 → 黑板预处理。**默认只做本地免费步骤，不调用任何付费 API**；ASR 是付费接口（按音频时长计费），需显式 `--with-asr` 开启。
+
+```bash
+# 预览将处理的缓存（只列出，不执行）
+python3 scripts/batch_process.py --list-only
+
+# 批量处理（本地免费步骤：转换 mp4 + density 取帧 + 黑板预处理）
+python3 scripts/batch_process.py
+
+# 小规模调试：只处理前 2 个缓存
+python3 scripts/batch_process.py --limit 2
+
+# 只处理指定 cid（可多次 --cid）
+python3 scripts/batch_process.py --cid 25685856471
+
+# 开启 ASR 语音转写（付费；批量前请确认总时长与预估费用）
+python3 scripts/batch_process.py --with-asr
+
+# 中断后重跑同一命令即可续跑（已有产物自动跳过）；--force 强制全部重跑
+python3 scripts/batch_process.py --force
+```
+
+### 标定 density 取帧阈值（analyze_frame_density.py）
+
+对单个视频分析板区文字密度分布（分位数 / 直方图 / 空板区间估计），用于标定 `--density-floor` / `--density-min-increment`。纯本地操作，不调用付费 API：
+
+```bash
+python3 scripts/analyze_frame_density.py --video lecture.mp4 --sampling-fps 1.0
+```
+
 ### 各 --path 的含义
 
 - **path 1**：只做画面 OCR（板书/录屏文字），不做语音；
@@ -162,11 +202,64 @@ python3 scripts/build_knowledge.py --subtitles output/subtitles.json --merged ou
 
 > **注意**：流水线默认 OCR 是「逐字转写黑板板书」，加 `--caption` 改为「描述画面内容」。单独运行 `ocr_doubao.py` 时默认恰恰相反（画面描述），需加 `--prompt-ocr` 才是逐字转写板书。
 
+## batch_process.py 参数说明
+
+批量处理入口只面向 B 站缓存。默认行为是「转换 mp4 + density 取帧 + 黑板预处理」全部本地免费步骤；ASR 付费，需显式 `--with-asr` 才开启。
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--cache-dir <path>` | `/Users/duanp/Movies/bilibili` | B 站缓存根目录 |
+| `--out-dir <path>` | 项目根目录 `output/` | 输出根目录；`<out>/converted/` 放转换后的 mp4，`<out>/<标题>/` 放每个视频的产物 |
+| `--limit <n>` | 全部 | 只处理前 N 个完整缓存（小规模调试用） |
+| `--cid <cid>` | 全部 | 只处理指定 cid（可多次指定） |
+| `--list-only` | 关 | 只列出将处理的缓存并退出，不执行任何转换/分析 |
+| `--with-asr` | 关 | 开启 ASR 语音转写（付费接口，按音频时长计费；批量前请确认总时长与费用） |
+| `--language <code>` | `zh-CN` | ASR 语言代码（`zh-CN`/`en-US`/`ja-JP` 等） |
+| `--skip-preprocess` | 关 | 跳过帧预处理，只转 mp4 + 取帧 |
+| `--no-crop` | 关 | 预处理时不裁剪板面，只做增强 |
+| `--force` | 关 | 忽略已有产物，全部重跑 |
+| `--density-*` / `--max-frames` | 同 run_pipeline | 透传给 `extract_frames.py` 的 density 取帧参数（含义见下节） |
+
+> 已存在的产物自动跳过（复用 `converted/` 下的 mp4，以及每个视频的 `frames.json` / `preprocessed/frames.json` / `subtitles.json`），中断后重跑同一命令即可续跑；`--force` 强制全部重跑。单个视频任一步骤失败不中断整体，汇总写入 `<out-dir>/batch_summary.txt`（成功/失败列表 + 完成步骤）。
+
+## density 取帧模式（文字密度增量采样）
+
+density 是当前**唯一**的取帧模式：用「板区文字密度」为主、「内容指纹」为辅来决定保留哪些帧，专为教学/板书视频设计。
+
+### 核心信号：板区文字密度
+
+- 只统计画面 **15%~60% 高度**的板区（`BOARD_CROP_GRAY` 滤镜），画面底部教师身体/讲台等高动态干扰不参与统计；
+- 板区灰度高于 `--density-bright-threshold`（默认 200）的像素计为板书/粉笔像素，其占比即「板区密度」；
+- 实测范围：空板 ≈ 0.06%~0.13%，有板书 0.3%~4%，密度随书写单调递增——是「板书是否在变化」的可靠信号。
+
+### 为什么不用纯指纹去重
+
+对真实教学视频实测，单纯 dHash 指纹去重会失真：
+
+- 教师只讲不写 → 出现数百秒大空档（既没有帧可去重，也取不到帧）；
+- 开头空板期被人物走动触发，误保留大量废帧；
+- 连续书写时每一笔都触发，帧过密。
+
+因此 density 改为「密度为主、指纹为辅」的增量采样，并配两个兜底机制。
+
+### 选择规则
+
+1. **书写增量**：密度相对上一保留帧净增 ≥ `--density-min-increment`（默认 0.35 个百分点）→ 保留（捕捉书写增量）；
+2. **内容改写**：密度相近但 64-bit dHash 指纹汉明距离 ≥ `--density-fingerprint-hamming`（默认 10）→ 保留（捕捉改写/换公式等不显著改变密度的内容变化，修掉「跳跃漏帧」）；
+3. **空板过滤**：密度 < `--density-floor`（默认 0.3%）视为空板，一律不保留（修掉「开头空板多帧」）；
+4. **最小间隔**：保留帧间隔 < `--density-min-interval`（默认 12s）跳过（修掉「连续书写 1~3s 过密」）；
+5. **擦板重写**：密度相对上一保留帧骤降 ≥ `--density-erase-drop`（默认 2.0 个百分点）判定为擦板并进入恢复期，之后密度回升至擦前密度的 `--density-erase-recover`（默认 0.7）比例即强制保留一帧——防止整板擦掉重写被跳过；
+6. **低对比度兜底**：一次提取帧数 < `--density-min-frames`（默认 15）且视频时长 > 600s 时，自动把亮像素阈值降到 180→160→150 重跑，取首个帧数达标（或帧数最多）的结果（粉笔亮度偏低的视频在默认阈值下密度信号会被压平）；
+7. **静止有板期兜底**：相邻保留帧间隔 > `--density-max-gap`（默认 300s）时，补入目标时刻之后首个有内容（密度 ≥ floor）的采样帧（`0`=关闭）——教师长时间只讲不写、板面静止时会产生数百秒大空档。
+
+最后若保留帧数超过 `--max-frames`（默认 120），均匀降采样到该上限。指纹为 64-bit dHash，取帧通过单条 ffmpeg 管道流式输出板区原始分辨率灰度图，同时计算密度与指纹，避免全分辨率整批载入内存。产物为 `<out-dir>/frame_%06d.jpg` + `frames.json` manifest（记录每帧 `t` / `density` / `hamming` / `forced` 字段），供 `preprocess_frames.py` 与 `ocr_doubao.py` 使用。每保留帧对应一次 OCR 计费，`--max-frames` 即费用上限。
+
 ## 脚本清单
 
 | 脚本 | 职责 | 是否调用付费 API |
 |---|---|---|
 | `run_pipeline.py` | 一键流水线入口：取帧 → 并行 ASR+OCR → 融合 → 知识文档 | 是（视 path） |
+| `batch_process.py` | 批量处理 B 站缓存：全量转 mp4 → 逐视频 density 取帧 → 黑板预处理 →（可选）ASR，写 `batch_summary.txt` | 是（仅 `--with-asr` 时） |
 | `convert_bilibili_cache.py` | B 站客户端缓存 m4s → mp4（无损 `-c copy`） | 否 |
 | `extract_frames.py` | 帧提取：density 文字密度增量采样（板区密度为主 + 内容指纹为辅） | 否 |
 | `preprocess_frames.py` | 黑板/白板区域检测、裁剪、CLAHE 增强 + 降噪 + 锐化 | 否 |
@@ -264,3 +357,15 @@ output/<视频名>/
 - `full_transcript.*` — 豆包大模型融合语音+板书的完整转写（与 `build_full_transcript.py` 的纯本地拼接版对应）；
 - `knowledge.md` — 结构化知识文档，模板见 `assets/default-template.md`；
 - `cards.csv` — 基于问答生成的闪卡，可导入 Anki 等复习软件。
+
+### 批量模式（batch_process.py）
+
+```
+output/
+├── batch_summary.txt        # 批量汇总：成功/失败列表（[ok]/[err] + cid + 标题 + 完成步骤）
+├── converted/               # 转换后的 mp4（按标题命名 <标题>.mp4）
+└── <标题>/                  # 每个视频一个目录
+    ├── frames/              # density 取帧：frame_%06d.jpg + frames.json
+    ├── preprocessed/        # 黑板裁剪+增强后的帧 + frames.json（--skip-preprocess 时无）
+    └── subtitles.{srt,vtt,json}   # 仅 --with-asr 时生成
+```

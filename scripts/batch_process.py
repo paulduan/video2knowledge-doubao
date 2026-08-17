@@ -66,6 +66,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="只列出将处理的缓存，不执行任何转换/分析")
     ap.add_argument("--with-asr", action="store_true",
                     help="开启 ASR 语音转写（付费 API，按音频时长计费；默认关闭）")
+    ap.add_argument("--with-ocr", action="store_true",
+                    help="开启 OCR 板书转写（付费 API，按图片张数/Token 计费；"
+                         "默认关闭；复用已预处理的黑板帧）")
     ap.add_argument("--language", default="zh-CN",
                     help="ASR 语言代码 (默认 zh-CN)")
     ap.add_argument("--skip-preprocess", action="store_true",
@@ -159,7 +162,8 @@ def main() -> int:
         print("[err] 没有可处理的完整缓存", file=sys.stderr)
         return 1
 
-    steps_txt = "转换 + 取帧 + 预处理" + (" + ASR" if args.with_asr else "")
+    steps_txt = "转换 + 取帧 + 预处理" + (" + ASR" if args.with_asr else "") \
+        + (" + OCR" if args.with_ocr else "")
     print(f"[batch] 待处理 {len(caches)} 个缓存: {steps_txt}", file=sys.stderr)
     print(f"[batch] 输出根目录: {base_dir}", file=sys.stderr)
     for i, c in enumerate(caches, 1):
@@ -171,6 +175,9 @@ def main() -> int:
     if args.with_asr:
         print("\n[注意] --with-asr 已开启，将调用付费 ASR 接口（按音频时长计费）。\n",
               file=sys.stderr)
+    if args.with_ocr:
+        print("\n[注意] --with-ocr 已开启，将调用付费视觉模型接口"
+              "（按图片张数/Token 计费）。\n", file=sys.stderr)
 
     converted_dir.mkdir(parents=True, exist_ok=True)
     ok_list, fail_list = [], []
@@ -243,6 +250,27 @@ def main() -> int:
                 else:
                     print(f"[batch] 复用 ASR 字幕: {subs}", file=sys.stderr)
                     done.append("asr(复用)")
+
+            # 5. OCR 板书转写（付费 API，默认关闭；复用已预处理的黑板帧）
+            if args.with_ocr:
+                caps = out_dir / "captions.json"
+                if args.force or not caps.is_file():
+                    pre_manifest = out_dir / "preprocessed" / "frames.json"
+                    if not pre_manifest.is_file():
+                        errors.append("ocr: 缺少预处理帧 manifest")
+                    else:
+                        rc = run_script("ocr_doubao.py", [
+                            "--manifest", str(pre_manifest),
+                            "--out-dir", str(out_dir),
+                            "--prompt-ocr",
+                        ])
+                        if rc == 0:
+                            done.append("ocr")
+                        else:
+                            errors.append(f"ocr: rc={rc}")
+                else:
+                    print(f"[batch] 复用 OCR 结果: {caps}", file=sys.stderr)
+                    done.append("ocr(复用)")
 
             if errors:
                 fail_list.append((c["cid"], title, errors))
